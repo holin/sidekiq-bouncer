@@ -23,7 +23,18 @@ module Sidekiq
     end
 
     def first_run?(*params)
-      self.class.config.redis.get(first_run_key(params)).blank?
+      first_run = self.class.config.redis.get(first_run_key(params))
+      return true if first_run.blank?
+
+      timestamp = self.class.config.redis.get(key(params))
+
+      overtime = timestamp.present? && timestamp.to_f + @delay < now
+      if overtime
+        clean_keys(params)
+        return true
+      end
+
+      false
     end
 
     def first_run_or_debounce(*params)
@@ -59,19 +70,27 @@ module Sidekiq
       first_run = self.class.config.redis.get(first_run_key(params))
 
       # Support first run
-      if timestamp.nil? && first_run.present?
-        return true
+      if timestamp.nil?
+        # Ensure timestamp for first_run? check
+        self.class.config.redis.set(key(params), now + @delay)
+
+        if first_run.present?
+          return true
+        end
       end
 
       return false if Time.now.to_f < timestamp.to_f
 
-      self.class.config.redis.del(key(params))
-      self.class.config.redis.del(first_run_key(params))
-
+      clean_keys(params)
       true
     end
 
     private
+
+    def clean_keys(params)
+      self.class.config.redis.del(key(params))
+      self.class.config.redis.del(first_run_key(params))
+    end
 
     def key(params)
       "#{@klass}:#{params.join(',')}"
